@@ -1,16 +1,32 @@
 # Prediction interface for Cog ⚙️
 # https://github.com/replicate/cog/blob/main/docs/python.md
 from cog import BasePredictor, Input, Path
+import os
+import time
 import torch
-import torchaudio
+import subprocess
 from typing import List
 from audiocraft.models import MAGNeT
 from audiocraft.data.audio import audio_write
 
+AUDIO_CACHE = 'checkpoints'
+AUDIO_URL = "https://weights.replicate.delivery/default/facebookresearch/audiocraft/magnet.tar"
+
+def download_weights(url, dest):
+    start = time.time()
+    print("downloading url: ", url)
+    print("downloading to: ", dest)
+    subprocess.check_call(["pget", "-x", url, dest], close_fds=False)
+    print("downloading took: ", time.time() - start)
+
 class Predictor(BasePredictor):
     def setup(self) -> None:
         """Load the model into memory to make running multiple predictions efficient"""
-        self.model = MAGNeT.get_pretrained("facebook/magnet-small-10secs")
+        # set the env variable AUDIOCRAFT_CACHE_DIR
+        os.environ['AUDIOCRAFT_CACHE_DIR'] = AUDIO_CACHE
+        if not os.path.exists(AUDIO_CACHE):
+            download_weights(AUDIO_URL, AUDIO_CACHE)
+        self.model = MAGNeT.get_pretrained("facebook/audio-magnet-medium")
 
     @torch.inference_mode()
     def predict(
@@ -83,11 +99,14 @@ class Predictor(BasePredictor):
             span_arrangement='stride1' if (span_score == 'prod-stride1') else 'nonoverlap',)
         wav = self.model.generate(descriptions)
 
+        #Delete older runs
+        os.system("rm -rf /tmp/output")
+
         for idx, one_wav in enumerate(wav):
-            audio_write(f'/tmp/{idx}', one_wav.cpu(), self.model.sample_rate, strategy="loudness", loudness_compressor=True)
+            audio_write(f'/tmp/output/{idx}', one_wav.cpu(), self.model.sample_rate, strategy="loudness", loudness_compressor=True)
 
         output_paths = []
         for idx in range(variations):
-            output_paths.append(Path(f'/tmp/{idx}.wav'))
+            output_paths.append(Path(f'/tmp/output/{idx}.wav'))
 
         return output_paths
