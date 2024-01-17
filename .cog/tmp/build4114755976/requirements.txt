@@ -1,0 +1,11 @@
+av
+einops
+flashy
+gradio==3.50.2
+julius
+num2words
+omegaconf
+sentencepiece
+torchmetrics
+torch==2.1.0
+torchaudio==2.1.0
