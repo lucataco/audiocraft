@@ -9,6 +9,9 @@ from typing import List
 from audiocraft.models import MAGNeT
 from audiocraft.data.audio import audio_write
 
+# Model specific imports
+import torchaudio
+
 AUDIO_CACHE = 'checkpoints'
 AUDIO_URL = "https://weights.replicate.delivery/default/facebookresearch/audiocraft/magnet.tar"
 
@@ -34,6 +37,27 @@ class Predictor(BasePredictor):
         prompt: str = Input(
             description="Input Text",
             default="80s electronic track with melodic synthesizers, catchy beat and groovy bass"
+        ),
+        input_audio: Path = Input(
+            description="An audio file that will influence the generated music. If `continuation` is `True`, the generated music will be a continuation of the audio file. Otherwise, the generated music will mimic the audio file's melody.",
+            default=None,
+        ),
+        duration: int = Input(
+            description="Duration of the generated audio in seconds.", default=8
+        ),
+        continuation: bool = Input(
+            description="If `True`, generated music will continue from `input_audio`. Otherwise, generated music will mimic `input_audio`'s melody.",
+            default=False,
+        ),
+        continuation_start: int = Input(
+            description="Start time of the audio file to use for continuation.",
+            default=0,
+            ge=0,
+        ),
+        continuation_end: int = Input(
+            description="End time of the audio file to use for continuation. If -1 or None, will default to the end of the audio clip.",
+            default=None,
+            ge=0,
         ),
         model: str = Input(
             description="Model to use",
@@ -91,13 +115,49 @@ class Predictor(BasePredictor):
         descriptions = [prompt for _ in range(variations)]
 
         self.model = MAGNeT.get_pretrained(model)
-        self.model.set_generation_params(
-            temperature=temperature,
-            top_p=top_p,
-            max_cfg_coef=max_cfg, min_cfg_coef=min_cfg, 
-            decoding_steps=[decoding_steps_stage_1, decoding_steps_stage_2, decoding_steps_stage_3, decoding_steps_stage_4],
-            span_arrangement='stride1' if (span_score == 'prod-stride1') else 'nonoverlap',)
-        wav = self.model.generate(descriptions)
+
+        if continuation and input_audio:
+            input_audio, sr = torchaudio.load(input_audio)
+            input_audio = input_audio[None] if input_audio.dim() == 2 else input_audio
+
+            continuation_start = 0 if not continuation_start else continuation_start
+            if continuation_end is None or continuation_end == -1:
+                continuation_end = input_audio.shape[2] / sr
+
+            if continuation_start > continuation_end:
+                raise ValueError(
+                    "`continuation_start` must be less than or equal to `continuation_end`"
+                )
+
+            input_audio_wavform = input_audio[
+                ..., int(sr * continuation_start) : int(sr * continuation_end)
+            ]
+            input_audio_duration = input_audio_wavform.shape[-1] / sr
+
+            self.model.set_generation_params(
+                duration=duration,
+                temperature=temperature,
+                top_p=top_p,
+                max_cfg_coef=max_cfg, min_cfg_coef=min_cfg, 
+                decoding_steps=[decoding_steps_stage_1, decoding_steps_stage_2, decoding_steps_stage_3, decoding_steps_stage_4],
+                span_arrangement='stride1' if (span_score == 'prod-stride1') else 'nonoverlap',)
+            wav, tokens = model.generate_continuation(
+                prompt=input_audio_wavform,
+                prompt_sample_rate=sr,
+                descriptions=[prompt],
+                progress=True,
+                return_tokens=True
+            )
+
+        else:
+            self.model.set_generation_params(
+                duration=duration,
+                temperature=temperature,
+                top_p=top_p,
+                max_cfg_coef=max_cfg, min_cfg_coef=min_cfg, 
+                decoding_steps=[decoding_steps_stage_1, decoding_steps_stage_2, decoding_steps_stage_3, decoding_steps_stage_4],
+                span_arrangement='stride1' if (span_score == 'prod-stride1') else 'nonoverlap',)
+            wav = self.model.generate(descriptions)
 
         #Delete older runs
         os.system("rm -rf /tmp/output")
